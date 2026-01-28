@@ -1,17 +1,48 @@
 #!/usr/bin/env node
 
-import { select, confirm, Separator } from '@inquirer/prompts';
-import { loadConfig, saveConfig, getGlobalConfigPath, getProjectConfigPath } from './config.js';
-import { listAvailableSounds, playSound } from './sound.js';
-import { EventType, PluginConfig, DEFAULT_CONFIG } from './types.js';
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'fs';
+import { join, dirname } from 'path';
+import { homedir } from 'os';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 
-const EVENTS: { key: EventType; label: string; description: string }[] = [
-  { key: 'complete', label: 'Task Complete', description: 'When OpenCode finishes a task' },
-  { key: 'error', label: 'Error', description: 'When an error occurs' },
-  { key: 'question', label: 'Question', description: 'When OpenCode needs input' },
-  { key: 'permission', label: 'Permission', description: 'When permission is required' },
-  { key: 'subagent_complete', label: 'Subagent Complete', description: 'When a subagent finishes' }
-];
+const execAsync = promisify(exec);
+
+const SYSTEM_SOUNDS_PATH = '/System/Library/Sounds';
+
+const DEFAULT_CONFIG = {
+  sound: true,
+  notification: true,
+  showProjectName: true,
+  sounds: {
+    complete: 'Glass',
+    error: 'Basso',
+    question: 'Ping',
+    permission: 'Tink',
+    subagent_complete: 'Pop'
+  }
+};
+
+function getGlobalConfigPath() {
+  return join(homedir(), '.config', 'opencode', 'opencode-notification-macos.json');
+}
+
+function listAvailableSounds() {
+  return [
+    'Basso', 'Blow', 'Bottle', 'Frog', 'Funk', 'Glass',
+    'Hero', 'Morse', 'Ping', 'Pop', 'Purr', 'Sosumi',
+    'Submarine', 'Tink'
+  ];
+}
+
+async function playSound(soundName: string) {
+  const soundPath = join(SYSTEM_SOUNDS_PATH, `${soundName}.aiff`);
+  try {
+    await execAsync(`afplay "${soundPath}"`);
+  } catch (e) {
+    // Silently fail
+  }
+}
 
 async function listSounds() {
   console.log('\n🔊 Available macOS System Sounds:\n');
@@ -22,147 +53,159 @@ async function listSounds() {
   console.log();
 }
 
-async function previewSound() {
+async function previewSound(args: string[]) {
+  const soundIndex = parseInt(args[0]) - 1;
   const sounds = listAvailableSounds();
   
-  const sound = await select({
-    message: 'Select a sound to preview:',
-    choices: sounds.map(s => ({ name: s, value: s }))
-  });
+  if (isNaN(soundIndex) || soundIndex < 0 || soundIndex >= sounds.length) {
+    console.log('\n🔊 Available sounds:\n');
+    sounds.forEach((sound, index) => {
+      console.log(`  ${index + 1}. ${sound}`);
+    });
+    console.log('\nUsage: npx opencode-notification-macos preview <number>');
+    console.log('Example: npx opencode-notification-macos preview 6\n');
+    return;
+  }
   
+  const sound = sounds[soundIndex];
   console.log(`\n🔊 Playing ${sound}...`);
   await playSound(sound);
   console.log('✅ Done\n');
 }
 
-async function configure() {
-  const isGlobal = await confirm({
-    message: 'Configure globally (for all projects)?',
-    default: true
-  });
+async function showConfig() {
+  const configPath = getGlobalConfigPath();
   
-  const config = loadConfig();
-  const sounds = listAvailableSounds();
-  
-  console.log('\n🎵 Configure Sounds for Each Event:\n');
-  
-  for (const event of EVENTS) {
-    const currentSound = config.sounds[event.key];
-    
-    const sound = await select({
-      message: `${event.label} (${event.description}):`,
-      default: currentSound,
-      choices: [
-        new Separator(),
-        ...sounds.map(s => ({ name: s, value: s })),
-        new Separator()
-      ]
-    });
-    
-    config.sounds[event.key] = sound;
-    
-    // Preview the selected sound
-    console.log(`  Previewing ${sound}...`);
-    await playSound(sound);
+  if (!existsSync(configPath)) {
+    console.log('\n⚙️  No configuration found. Using defaults:\n');
+    console.log(JSON.stringify(DEFAULT_CONFIG, null, 2));
+    console.log(`\nConfig path: ${configPath}\n`);
+    return;
   }
   
-  // Configure global toggles
-  console.log('\n⚙️  Global Settings:\n');
-  
-  config.sound = await confirm({
-    message: 'Enable sounds?',
-    default: config.sound
-  });
-  
-  config.notification = await confirm({
-    message: 'Enable visual notifications?',
-    default: config.notification
-  });
-  
-  config.showProjectName = await confirm({
-    message: 'Show project name in notifications?',
-    default: config.showProjectName
-  });
-  
-  // Save configuration
-  saveConfig(config, isGlobal);
-  
-  const configPath = isGlobal ? getGlobalConfigPath() : getProjectConfigPath();
-  console.log(`\n✅ Configuration saved to: ${configPath}\n`);
+  try {
+    const config = JSON.parse(readFileSync(configPath, 'utf8'));
+    console.log('\n📋 Current Configuration:\n');
+    console.log(JSON.stringify(config, null, 2));
+    console.log(`\nConfig path: ${configPath}\n`);
+  } catch (e) {
+    console.error('❌ Error reading config:', e);
+  }
 }
 
-async function reset() {
-  const isGlobal = await confirm({
-    message: 'Reset global configuration to defaults?',
-    default: true
-  });
-  
-  saveConfig(DEFAULT_CONFIG, isGlobal);
-  console.log('\n✅ Configuration reset to defaults\n');
+async function resetConfig() {
+  const configPath = getGlobalConfigPath();
+  try {
+    mkdirSync(dirname(configPath), { recursive: true });
+    writeFileSync(configPath, JSON.stringify(DEFAULT_CONFIG, null, 2));
+    console.log('\n✅ Configuration reset to defaults\n');
+    console.log(`Config saved to: ${configPath}\n`);
+  } catch (e) {
+    console.error('❌ Error saving config:', e);
+  }
 }
 
-async function showCurrent() {
-  const config = loadConfig();
+async function setSound(args: string[]) {
+  const [event, soundName] = args;
+  const validEvents = ['complete', 'error', 'question', 'permission', 'subagent_complete'];
+  const validSounds = listAvailableSounds();
   
-  console.log('\n📋 Current Configuration:\n');
-  console.log('  Global Settings:');
-  console.log(`    Sounds: ${config.sound ? '✅' : '❌'}`);
-  console.log(`    Notifications: ${config.notification ? '✅' : '❌'}`);
-  console.log(`    Show Project Name: ${config.showProjectName ? '✅' : '❌'}`);
-  console.log('\n  Event Sounds:');
-  
-  for (const event of EVENTS) {
-    console.log(`    ${event.label}: ${config.sounds[event.key]}`);
+  if (!event || !soundName) {
+    console.log('\nUsage: npx opencode-notification-macos set-sound <event> <sound>');
+    console.log('\nValid events:', validEvents.join(', '));
+    console.log('Valid sounds:', validSounds.join(', '));
+    console.log('\nExample: npx opencode-notification-macos set-sound complete Glass\n');
+    return;
   }
   
-  console.log(`\n  Global config: ${getGlobalConfigPath()}`);
-  console.log(`  Project config: ${getProjectConfigPath()}`);
-  console.log();
+  if (!validEvents.includes(event)) {
+    console.error(`❌ Invalid event: ${event}`);
+    console.log('Valid events:', validEvents.join(', '));
+    return;
+  }
+  
+  if (!validSounds.includes(soundName)) {
+    console.error(`❌ Invalid sound: ${soundName}`);
+    console.log('Valid sounds:', validSounds.join(', '));
+    return;
+  }
+  
+  const configPath = getGlobalConfigPath();
+  let config = DEFAULT_CONFIG;
+  
+  if (existsSync(configPath)) {
+    try {
+      config = JSON.parse(readFileSync(configPath, 'utf8'));
+    } catch (e) {
+      // Use defaults
+    }
+  }
+  
+  config.sounds[event as keyof typeof config.sounds] = soundName;
+  
+  try {
+    mkdirSync(dirname(configPath), { recursive: true });
+    writeFileSync(configPath, JSON.stringify(config, null, 2));
+    console.log(`\n✅ Set ${event} sound to ${soundName}\n`);
+    
+    // Preview the sound
+    console.log(`🔊 Previewing ${soundName}...`);
+    await playSound(soundName);
+  } catch (e) {
+    console.error('❌ Error saving config:', e);
+  }
 }
 
 async function main() {
   const command = process.argv[2];
+  const args = process.argv.slice(3);
   
   switch (command) {
     case 'list':
       await listSounds();
       break;
     case 'preview':
-      await previewSound();
+      await previewSound(args);
       break;
     case 'config':
-    case 'configure':
-      await configure();
+    case 'show':
+      await showConfig();
       break;
     case 'reset':
-      await reset();
+      await resetConfig();
       break;
-    case 'show':
-    case 'current':
-      await showCurrent();
+    case 'set-sound':
+      await setSound(args);
       break;
     default:
       console.log(`
 🔔 OpenCode Notification macOS
 
 Usage:
-  npx opencode-notification-macos <command>
+  npx opencode-notification-macos <command> [options]
 
 Commands:
-  list              List all available macOS system sounds
-  preview           Preview a sound
-  config            Configure sounds and settings interactively
-  reset             Reset configuration to defaults
-  show              Show current configuration
+  list                          List all available macOS system sounds
+  preview <number>              Preview a sound by number (1-14)
+  config, show                  Show current configuration
+  reset                         Reset configuration to defaults
+  set-sound <event> <sound>     Set sound for an event
 
 Examples:
-  npx opencode-notification-macos config
-  npx opencode-notification-macos preview
   npx opencode-notification-macos list
+  npx opencode-notification-macos preview 6
+  npx opencode-notification-macos set-sound complete Glass
+  npx opencode-notification-macos set-sound error Basso
 
-Configuration files:
-  Global: ~/.config/opencode/opencode-notification-macos.json
-  Project: .opencode/notification.json
+Configuration file:
+  ~/.config/opencode/opencode-notification-macos.json
+
+Events:
+  complete          - Task completed
+  error             - Error occurred
+  question          - OpenCode needs input
+  permission        - Permission required
+  subagent_complete - Subagent task finished
 `);
   }
 }

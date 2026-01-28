@@ -1,0 +1,49 @@
+{
+  "name": "opencode-notification-macos",
+  "version": "1.0.0",
+  "description": "Native macOS notifications and sounds for OpenCode - zero dependencies",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "opencode-notification-macos": "dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "macos",
+    "notifications",
+    "sound"
+  ],
+  "author": "Evan Stinger",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/evanstinger/opencode-notification-macos.git"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.0.0"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.1.0",
+    "@types/node": "^22.0.0",
+    "@types/inquirer": "^9.0.0",
+    "inquirer": "^9.2.0",
+    "typescript": "^5.7.0"
+  }
+}
