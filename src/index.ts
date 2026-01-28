@@ -2,7 +2,7 @@ import { loadConfig } from './config.js';
 import { handleEvent } from './sound.js';
 import { EventType } from './types.js';
 
-export interface PluginContext {
+interface PluginContext {
   client: {
     session: {
       get: (params: { path: { id: string } }) => Promise<{ data?: { parentID?: string } }>;
@@ -11,7 +11,7 @@ export interface PluginContext {
   directory: string;
 }
 
-export interface Event {
+interface Event {
   type: string;
   data?: {
     sessionID?: string;
@@ -33,7 +33,7 @@ async function isChildSession(client: PluginContext['client'], sessionID: string
   }
 }
 
-export default async function opencodeNotificationMacOS({ client, directory }: PluginContext) {
+async function opencodeNotificationMacOS({ client, directory }: PluginContext) {
   const config = loadConfig();
   const projectName = directory ? directory.split('/').pop() || null : null;
   
@@ -74,6 +74,4 @@ export default async function opencodeNotificationMacOS({ client, directory }: P
   };
 }
 
-export * from './types.js';
-export * from './config.js';
-export * from './sound.js';
+export = opencodeNotificationMacOS;
