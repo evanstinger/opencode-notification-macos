@@ -42,7 +42,14 @@ export async function showNotification(title: string, message: string): Promise<
 export async function handleEvent(
   eventType: EventType,
   projectName: string | null,
-  config: { sound: boolean; notification: boolean; showProjectName: boolean; messages: Record<EventType, string>; sounds: SoundConfig }
+  config: { 
+    sound: boolean; 
+    notification: boolean; 
+    showProjectName: boolean; 
+    messages: Record<EventType, string>; 
+    sounds: SoundConfig;
+    events?: Record<EventType, { sound: boolean; notification: boolean }>;
+  }
 ): Promise<void> {
   const title = config.showProjectName && projectName 
     ? `OpenCode (${projectName})` 
@@ -50,13 +57,17 @@ export async function handleEvent(
   
   const message = config.messages[eventType];
   
+  const eventConfig = config.events?.[eventType];
+  const shouldNotify = config.notification && (eventConfig?.notification !== false);
+  const shouldPlaySound = config.sound && (eventConfig?.sound !== false);
+  
   // Show notification
-  if (config.notification) {
+  if (shouldNotify) {
     await showNotification(title, message);
   }
   
   // Play sound
-  if (config.sound) {
+  if (shouldPlaySound) {
     const soundName = config.sounds[eventType];
     await playSound(soundName);
   }

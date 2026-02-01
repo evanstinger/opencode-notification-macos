@@ -1,7 +1,6 @@
 import type { Plugin } from '@opencode-ai/plugin';
 import { loadConfig } from './config.js';
 import { handleEvent } from './sound.js';
-import { EventType } from './types.js';
 
 interface Event {
   type: string;
@@ -25,6 +24,16 @@ async function isChildSession(client: any, sessionID: string): Promise<boolean> 
   }
 }
 
+async function hasIncompleteTodos(client: any, sessionID: string): Promise<boolean> {
+  try {
+    const response = await client.todo.list({ path: { sessionID } });
+    const todos = response.data?.todos || [];
+    return todos.some((todo: any) => todo.status !== 'completed' && todo.status !== 'cancelled');
+  } catch {
+    return false;
+  }
+}
+
 export const opencodeNotificationMacOS: Plugin = async ({ client, directory }) => {
   const config = loadConfig();
   const projectName = directory ? directory.split('/').pop() || null : null;
@@ -41,8 +50,14 @@ export const opencodeNotificationMacOS: Plugin = async ({ client, directory }) =
         const sessionID = getSessionIDFromEvent(event);
         if (sessionID) {
           const isChild = await isChildSession(client, sessionID);
-          const eventType: EventType = isChild ? 'subagent_complete' : 'complete';
-          await handleEvent(eventType, projectName, config);
+          if (isChild) {
+            await handleEvent('subagent_complete', projectName, config);
+          } else {
+            const willContinue = await hasIncompleteTodos(client, sessionID);
+            if (!willContinue) {
+              await handleEvent('complete', projectName, config);
+            }
+          }
         } else {
           await handleEvent('complete', projectName, config);
         }
