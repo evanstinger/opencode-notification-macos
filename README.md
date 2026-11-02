@@ -29,7 +29,7 @@ npx opencode-notification-macos config
 # 3. Add to OpenCode configuration
 cat >> ~/.config/opencode/opencode.jsonc << 'EOF'
 {
-  "plugin": [
+  "plugins": [
     "opencode-notification-macos"
   ]
 }
@@ -46,7 +46,7 @@ Then add to your `~/.config/opencode/opencode.jsonc`:
 
 ```json
 {
-  "plugin": [
+  "plugins": [
     "opencode-notification-macos"
   ]
 }

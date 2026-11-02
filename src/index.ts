@@ -1,84 +1,105 @@
-import type { Plugin } from '@opencode-ai/plugin';
+import { Plugin } from '@opencode/plugin';
 import { loadConfig } from './config.js';
 import { handleEvent } from './sound.js';
 
 interface Event {
   type: string;
-  data?: {
-    sessionID?: string;
-    id?: string;
-  };
-  sessionID?: string;
+  data?: { sessionID?: string; id?: string };
 }
 
-function getSessionIDFromEvent(event: Event): string | null {
-  return event.data?.sessionID || event.sessionID || event.data?.id || null;
-}
-
-async function isChildSession(client: any, sessionID: string): Promise<boolean> {
+async function isChildSession(ctx: { session: { get: (input: { sessionID: string }) => Promise<any> } }, sessionID: string): Promise<boolean> {
   try {
-    const response = await client.session.get({ path: { id: sessionID } });
-    return !!response.data?.parentID;
+    const response = await ctx.session.get({ sessionID });
+    const session = response?.data ?? response;
+    return !!session?.parentID;
   } catch {
     return false;
   }
 }
 
-async function hasIncompleteTodos(client: any, sessionID: string): Promise<boolean> {
-  try {
-    const response = await client.todo.list({ path: { sessionID } });
-    const todos = response.data?.todos || [];
-    return todos.some((todo: any) => todo.status !== 'completed' && todo.status !== 'cancelled');
-  } catch {
-    return false;
-  }
-}
+export default Plugin.define({
+  id: 'opencode-notification-macos',
+  setup(ctx) {
+    const config = loadConfig();
+    const directory = ctx.location?.directory ?? process.cwd();
+    const projectName = directory ? directory.split('/').pop() || null : null;
 
-export const opencodeNotificationMacOS: Plugin = async ({ client, directory }) => {
-  const config = loadConfig();
-  const projectName = directory ? directory.split('/').pop() || null : null;
-
-  return {
-    event: async ({ event }: { event: Event }) => {
-      // Permission events
-      if (event.type === 'permission.updated' || event.type === 'permission.asked') {
-        await handleEvent('permission', projectName, config);
-      }
-
-      // Session completion
-      if (event.type === 'session.idle') {
-        const sessionID = getSessionIDFromEvent(event);
-        if (sessionID) {
-          const isChild = await isChildSession(client, sessionID);
-          if (isChild) {
-            await handleEvent('subagent_complete', projectName, config);
-          } else {
-            const willContinue = await hasIncompleteTodos(client, sessionID);
-            if (!willContinue) {
-              await handleEvent('complete', projectName, config);
-            }
-          }
-        } else {
-          await handleEvent('complete', projectName, config);
-        }
-      }
-
-      // Error events
-      if (event.type === 'session.error') {
-        await handleEvent('error', projectName, config);
-      }
-    },
-
-    'permission.ask': async (_input: any, _output: any) => {
-      await handleEvent('permission', projectName, config);
-    },
-
-    'tool.execute.before': async (input: any, _output: any) => {
-      if (input.tool === 'question') {
-        await handleEvent('question', projectName, config);
-      }
-    }
+    const debug = process.env.ONM_DEBUG === "1";
+    const probe = "/tmp/onm-debug.log";
+    const log = (...args: unknown[]) => {
+      if (!debug) return;
+      const line = new Date().toISOString() + " [onm] " + args.map((a) => typeof a === "string" ? a : JSON.stringify(a)).join(" ") + "\n";
+      import('fs').then((fs) => fs.appendFileSync(probe, line)).catch(() => {});
     };
-};
 
-export default opencodeNotificationMacOS;
+    // In-process hooks are the primary signal path in v2. The
+    // ctx.event.subscribe stream can stay silent in fresh server
+    // instances, so it is only kept as a fallback for execution
+    // failures (which have no session hook).
+    const controller = new AbortController();
+
+    // Dedupe idle notifications per session, reset when a new prompt
+    // starts so every run notifies exactly once.
+    const notifiedIdle = new Set<string>();
+
+    const notifyIdle = async (sessionID: string | undefined) => {
+      if (sessionID) {
+        if (notifiedIdle.has(sessionID)) return;
+        notifiedIdle.add(sessionID);
+        const isChild = await isChildSession(ctx, sessionID);
+        await handleEvent(isChild ? 'subagent_complete' : 'complete', projectName, config);
+      } else {
+        await handleEvent('complete', projectName, config);
+      }
+    };
+
+    void Promise.all([
+      ctx.session.hook('prompt', (input) => {
+        if (debug) log("session.prompt", String(input.sessionID));
+        notifiedIdle.delete(String(input.sessionID));
+      }),
+      ctx.session.hook('experimental.idle', (input) => {
+        if (debug) log("session.idle.hook", String(input.sessionID));
+        return notifyIdle(String(input.sessionID));
+      }),
+      ctx.tool.hook('execute.before', (input) => {
+        if (debug) log("tool.before", input.tool);
+        if (input.tool === 'question') {
+          return handleEvent('question', projectName, config);
+        }
+      }),
+      ctx.permission.hook('evaluate', (input) => {
+        if (debug) log("permission.evaluate", input.effect, input.action);
+        if (input.effect === 'ask') {
+          return handleEvent('permission', projectName, config);
+        }
+      }),
+    ]).catch((e) => console.error("[onm] hook register failed:", e));
+
+    void (async () => {
+      // Fallback path: error events. In debug mode subscribe unfiltered
+      // to diagnose whether the event stream carries anything at all.
+      const types: readonly string[] | undefined = debug ? undefined : ['session.execution.failed'];
+      // EventType union is opaque here; widening the signature to string[]
+      // so the debug unfiltered subscribe type-checks alongside the filtered one.
+      type EventSubscribe = (options?: { types?: readonly string[]; signal?: AbortSignal }) => AsyncIterable<Event>;
+      const subscribe = ctx.event.subscribe as unknown as EventSubscribe;
+      try {
+        for await (const event of subscribe({ types, signal: controller.signal })) {
+          if (controller.signal.aborted) return;
+          if (debug) log("event", event.type);
+          if (event.type === 'session.execution.failed') {
+            await handleEvent('error', projectName, config);
+          }
+        }
+        if (debug) log("event stream ended");
+      } catch (e) {
+        console.error("[onm] subscribe loop error:", e instanceof Error ? e.stack || e.message : e);
+      }
+    })();
+
+    log("setup done, hooks registered");
+
+    return () => controller.abort();
+  },
+});
