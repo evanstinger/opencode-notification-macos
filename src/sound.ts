@@ -25,7 +25,7 @@ export async function playSound(soundName: string): Promise<void> {
   try {
     await execAsync(`afplay "${soundPath}"`);
   } catch (e) {
-    // Silently fail - notifications shouldn't break workflow
+    console.error('[opencode-notification-macos] afplay failed:', e instanceof Error ? e.message : e);
   }
 }
 
@@ -35,7 +35,7 @@ export async function showNotification(title: string, message: string): Promise<
     const escapedMessage = message.replace(/"/g, '\\"');
     await execAsync(`osascript -e 'display notification "${escapedMessage}" with title "${escapedTitle}"'`);
   } catch (e) {
-    // Silently fail
+    console.error('[opencode-notification-macos] osascript failed:', e instanceof Error ? e.message : e);
   }
 }
 
@@ -51,6 +51,9 @@ export async function handleEvent(
     events?: Record<EventType, { sound: boolean; notification: boolean }>;
   }
 ): Promise<void> {
+  if (process.env.ONM_DEBUG === "1") {
+    import('fs').then((fs) => fs.appendFileSync('/tmp/onm-debug.log', new Date().toISOString() + ' [onm] handleEvent ' + eventType + '\n')).catch(() => {});
+  }
   const title = config.showProjectName && projectName 
     ? `OpenCode (${projectName})` 
     : 'OpenCode';

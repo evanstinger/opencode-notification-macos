@@ -36,41 +36,62 @@ export default Plugin.define({
     const projectName = directory ? directory.split('/').pop() || null : null;
 
     const controller = new AbortController();
+    const thisIdleSessions = new Set<string>();
+
+    const debug = process.env.ONM_DEBUG === "1";
+    const probe = "/tmp/onm-debug.log";
+    const log = (...args: unknown[]) => {
+      if (!debug) return;
+      const line = new Date().toISOString() + " [onm] " + args.map((a) => typeof a === "string" ? a : JSON.stringify(a)).join(" ") + "\n";
+      import('fs').then((fs) => fs.appendFileSync(probe, line)).catch(() => {});
+    };
 
     void (async () => {
-      const types = ['session.idle', 'session.execution.failed', 'permission.asked'] as const;
-      for await (const event of ctx.event.subscribe({ types: [...types], signal: controller.signal }) as AsyncIterable<Event>) {
-        if (controller.signal.aborted) return;
+      const types = ['session.idle', 'session.status', 'session.execution.failed', 'permission.asked'] as const;
+      try {
+        for await (const event of ctx.event.subscribe({ types: [...types], signal: controller.signal }) as AsyncIterable<Event>) {
+          if (controller.signal.aborted) return;
+          if (debug) log("event", event.type, JSON.stringify(getSessionIDFromEvent(event)));
 
-        if (event.type === 'permission.asked') {
-          await handleEvent('permission', projectName, config);
-        }
+          if (event.type === 'permission.asked') {
+            await handleEvent('permission', projectName, config);
+          }
 
-        if (event.type === 'session.execution.failed') {
-          await handleEvent('error', projectName, config);
-        }
+          if (event.type === 'session.execution.failed') {
+            await handleEvent('error', projectName, config);
+          }
 
-        if (event.type === 'session.idle') {
-          const sessionID = getSessionIDFromEvent(event);
-          if (sessionID) {
-            const isChild = await isChildSession(ctx, sessionID);
-            if (isChild) {
-              await handleEvent('subagent_complete', projectName, config);
-            } else {
+          const statusEvent = event as Event & { data?: EventProps & { status?: { type?: string } } };
+          const idle = event.type === 'session.idle' || (event.type === 'session.status' && statusEvent.data?.status?.type === 'idle');
+          if (idle) {
+            const sessionID = getSessionIDFromEvent(event);
+            if (sessionID && !thisIdleSessions.has(sessionID)) {
+              thisIdleSessions.add(sessionID);
+              const isChild = await isChildSession(ctx, sessionID);
+              if (isChild) {
+                await handleEvent('subagent_complete', projectName, config);
+              } else {
+                await handleEvent('complete', projectName, config);
+              }
+            } else if (!sessionID) {
               await handleEvent('complete', projectName, config);
             }
-          } else {
-            await handleEvent('complete', projectName, config);
           }
         }
+        if (debug) log("event stream ended");
+      } catch (e) {
+        console.error("[onm] subscribe loop error:", e instanceof Error ? e.stack || e.message : e);
       }
     })();
 
     void ctx.tool.hook('execute.before', async (input) => {
+      if (debug) log("tool.before", input.tool);
       if (input.tool === 'question') {
         await handleEvent('question', projectName, config);
       }
-    });
+    }).catch((e) => console.error("[onm] tool hook register failed:", e));
+
+    log("setup done, watching events");
 
     return () => controller.abort();
   },
