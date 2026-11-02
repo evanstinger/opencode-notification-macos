@@ -1,84 +1,77 @@
-import type { Plugin } from '@opencode-ai/plugin';
+import { Plugin } from '@opencode/plugin';
 import { loadConfig } from './config.js';
 import { handleEvent } from './sound.js';
 
+interface EventProps {
+  sessionID?: string;
+  id?: string;
+}
+
 interface Event {
   type: string;
-  data?: {
-    sessionID?: string;
-    id?: string;
-  };
+  data?: EventProps;
+  properties?: EventProps;
   sessionID?: string;
 }
 
 function getSessionIDFromEvent(event: Event): string | null {
-  return event.data?.sessionID || event.sessionID || event.data?.id || null;
+  return event.data?.sessionID || event.properties?.sessionID || event.sessionID || event.data?.id || null;
 }
 
-async function isChildSession(client: any, sessionID: string): Promise<boolean> {
+async function isChildSession(ctx: { session: { get: (input: { sessionID: string }) => Promise<any> } }, sessionID: string): Promise<boolean> {
   try {
-    const response = await client.session.get({ path: { id: sessionID } });
-    return !!response.data?.parentID;
+    const response = await ctx.session.get({ sessionID });
+    const session = response?.data ?? response;
+    return !!session?.parentID;
   } catch {
     return false;
   }
 }
 
-async function hasIncompleteTodos(client: any, sessionID: string): Promise<boolean> {
-  try {
-    const response = await client.todo.list({ path: { sessionID } });
-    const todos = response.data?.todos || [];
-    return todos.some((todo: any) => todo.status !== 'completed' && todo.status !== 'cancelled');
-  } catch {
-    return false;
-  }
-}
+export default Plugin.define({
+  id: 'opencode-notification-macos',
+  setup(ctx) {
+    const config = loadConfig();
+    const directory = ctx.location?.directory ?? process.cwd();
+    const projectName = directory ? directory.split('/').pop() || null : null;
 
-export const opencodeNotificationMacOS: Plugin = async ({ client, directory }) => {
-  const config = loadConfig();
-  const projectName = directory ? directory.split('/').pop() || null : null;
+    const controller = new AbortController();
 
-  return {
-    event: async ({ event }: { event: Event }) => {
-      // Permission events
-      if (event.type === 'permission.updated' || event.type === 'permission.asked') {
-        await handleEvent('permission', projectName, config);
-      }
+    void (async () => {
+      const types = ['session.idle', 'session.execution.failed', 'permission.asked'] as const;
+      for await (const event of ctx.event.subscribe({ types: [...types], signal: controller.signal }) as AsyncIterable<Event>) {
+        if (controller.signal.aborted) return;
 
-      // Session completion
-      if (event.type === 'session.idle') {
-        const sessionID = getSessionIDFromEvent(event);
-        if (sessionID) {
-          const isChild = await isChildSession(client, sessionID);
-          if (isChild) {
-            await handleEvent('subagent_complete', projectName, config);
-          } else {
-            const willContinue = await hasIncompleteTodos(client, sessionID);
-            if (!willContinue) {
+        if (event.type === 'permission.asked') {
+          await handleEvent('permission', projectName, config);
+        }
+
+        if (event.type === 'session.execution.failed') {
+          await handleEvent('error', projectName, config);
+        }
+
+        if (event.type === 'session.idle') {
+          const sessionID = getSessionIDFromEvent(event);
+          if (sessionID) {
+            const isChild = await isChildSession(ctx, sessionID);
+            if (isChild) {
+              await handleEvent('subagent_complete', projectName, config);
+            } else {
               await handleEvent('complete', projectName, config);
             }
+          } else {
+            await handleEvent('complete', projectName, config);
           }
-        } else {
-          await handleEvent('complete', projectName, config);
         }
       }
+    })();
 
-      // Error events
-      if (event.type === 'session.error') {
-        await handleEvent('error', projectName, config);
-      }
-    },
-
-    'permission.ask': async (_input: any, _output: any) => {
-      await handleEvent('permission', projectName, config);
-    },
-
-    'tool.execute.before': async (input: any, _output: any) => {
+    void ctx.tool.hook('execute.before', async (input) => {
       if (input.tool === 'question') {
         await handleEvent('question', projectName, config);
       }
-    }
-    };
-};
+    });
 
-export default opencodeNotificationMacOS;
+    return () => controller.abort();
+  },
+});
